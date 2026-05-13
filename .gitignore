@@ -1,0 +1,44 @@
+# Environment
+.env
+
+# Cookies (sensitive)
+www.youtube.com_cookies.txt
+*cookies*.txt
+
+# Runtime data
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+
+# Node.js (nodeenv)
+.node/
+
+# Temp / debug files
+bgutil-ytdlp-pot-provider-*/
+bgutil.zip
+run.log
+run_output.txt
+tmp_*.py
+
+# Personal docs
+项目报告.md
+简历版项目描述.md
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Trae
+.trae/
