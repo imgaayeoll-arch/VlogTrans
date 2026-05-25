@@ -14,25 +14,30 @@ class YoutubeRadar:
         self.channel_urls = settings.youtube_channel_urls
         self.storage = VideoStorage()
         self.download_path = settings.download_path
+        self._subprocess_env = self._build_subprocess_env()
+
+    @staticmethod
+    def _build_subprocess_env():
+        env = os.environ.copy()
+        deno_bin = os.path.expanduser("~/.deno/bin")
+        if os.path.isdir(deno_bin) and deno_bin not in env.get("PATH", ""):
+            env["PATH"] = deno_bin + os.pathsep + env.get("PATH", "")
+        return env
 
     # ================= Cookie 处理 =================
     def _cookie_source_args(self):
-        args = []
+        args = [
+            ["--cookies-from-browser", "firefox"],
+        ]
         if settings.youtube_cookies_path:
             args.append(["--cookies", settings.youtube_cookies_path])
-        args.extend([
-            ["--cookies-from-browser", "chrome:Default"],
-            ["--cookies-from-browser", "chrome"],
-            ["--cookies-from-browser", "edge"],
-            ["--cookies-from-browser", "firefox"],
-        ])
         return args
 
     def _run_yt_dlp_with_cookies(self, base_cmd, timeout):
         for cookie_args in self._cookie_source_args():
             cmd = base_cmd + cookie_args
             logger.debug(f"Trying yt-dlp with cookies: {shlex.join(cmd)}")
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=self._subprocess_env)
             if result.returncode == 0:
                 return result
 
@@ -51,7 +56,7 @@ class YoutubeRadar:
             return result
 
         logger.warning("Cookie extraction failed for all supported methods, retrying without cookies.")
-        return subprocess.run(base_cmd, capture_output=True, text=True, timeout=timeout)
+        return subprocess.run(base_cmd, capture_output=True, text=True, timeout=timeout, env=self._subprocess_env)
 
     # ================= 获取最新的 N 个视频（默认 3 个） =================
     def _get_latest_videos(self, channel_url, max_count=3):
@@ -73,8 +78,6 @@ class YoutubeRadar:
             "--playlist-reverse",
             "--playlist-end", str(max_count),
             "--print", "%(id)s\t%(title)s",
-            "--extractor-args", "youtube:player_client=web_safari",
-            "--remote-components", "ejs:github",
             channel_url
         ]
         full_cmd = []
@@ -85,7 +88,7 @@ class YoutubeRadar:
             full_cmd = cmd
 
         logger.debug(f"Executing: {shlex.join(full_cmd)}")
-        result = subprocess.run(full_cmd, capture_output=True, text=True, timeout=120)
+        result = subprocess.run(full_cmd, capture_output=True, text=True, timeout=120, env=self._subprocess_env)
         if result.returncode != 0:
             logger.warning(f"yt-dlp get_latest_videos failed: {result.stderr}")
             return []
@@ -150,8 +153,6 @@ class YoutubeRadar:
             settings.yt_dlp_path,
             "-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
             "--merge-output-format", "mp4",
-            "--extractor-args", "youtube:player_client=web_safari",
-            "--remote-components", "ejs:github",
             "-o", output_template,
             "--no-playlist",
             url,
@@ -181,8 +182,7 @@ class YoutubeRadar:
             settings.yt_dlp_path,
             "-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
             "--merge-output-format", "mp4",
-            "--extractor-args", "youtube:player_client=web_safari",
-            "--remote-components", "ejs:github",
+            "--no-simulate",
             "--print", "%(id)s\t%(title)s",
             "-o", output_template,
             "--no-playlist",
