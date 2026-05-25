@@ -24,6 +24,7 @@
 - 📝 **翻译审查** — 中英对照 review.txt，编辑后自动回写缓存
 - 📡 **多频道支持** — 同时监控多个 YouTube 频道，自动去重
 - 🔗 **单视频处理** — `--video` 参数直接处理任意视频 URL
+- 🖥️ **可视化面板** — Streamlit Web UI，配置检查、任务运行、翻译审查一站搞定
 
 ---
 
@@ -97,11 +98,10 @@ ollama pull qwen2.5
 cp .env.example .env
 # 编辑 .env，填入你的配置
 
-# 6. 准备 YouTube Cookies（下载 1080p 必须）
-# 在浏览器隐私窗口中登录 YouTube
-# 访问 https://www.youtube.com/robots.txt
-# 使用浏览器插件导出 cookies 为 Netscape 格式
-# 保存为 www.youtube.com_cookies.txt
+# 6. 准备 YouTube Cookies（下载 1080p 需要）
+# 优先方案：安装 Firefox 浏览器，yt-dlp 会自动读取 cookies，无需手动配置
+# 回退方案：使用浏览器插件导出 cookies 为 Netscape 格式，保存为 www.youtube.com_cookies.txt
+# 在 .env 中设置 YOUTUBE_COOKIES_PATH 指向该文件
 ```
 
 ---
@@ -115,9 +115,10 @@ cp .env.example .env
 | `YOUTUBE_CHANNEL_URLS` | ✅ | 监控的频道 URL（逗号分隔） | `https://youtube.com/@sydneyserena,https://youtube.com/@leahhalton` |
 | `FFMPEG_PATH` | ✅ | FFmpeg 可执行文件路径 | `D:\ffmpeg\bin\ffmpeg.exe` |
 | `YT_DLP_PATH` | ✅ | yt-dlp 路径 | `D:\yt-dlp.exe` |
-| `DEESEEK_MODEL` | ✅ | Ollama 翻译模型 | `qwen2.5` |
+| `DEESEEK_MODEL` | ✅ | Ollama 翻译模型（已废弃，请使用 `TRANSLATION_MODEL`） | `qwen2.5` |
+| `TRANSLATION_MODEL` | ✅ | Ollama 翻译模型 | `qwen2.5` |
 | `WHISPER_MODEL` | ✅ | Whisper 模型 | `medium.en` |
-| `YOUTUBE_COOKIES_PATH` | ✅ | Cookies 文件路径 | `www.youtube.com_cookies.txt` |
+| `YOUTUBE_COOKIES_PATH` | | Cookies 文件路径（Firefox 用户可跳过，自动从浏览器读取） | `www.youtube.com_cookies.txt` |
 | `OLLAMA_HOST` | | Ollama 服务地址 | `http://127.0.0.1:11434` |
 | `OLLAMA_DISABLE_PROXY` | | 禁用 Ollama 代理 | `true` |
 | `HTTP_PROXY` | | HTTP 代理 | `http://127.0.0.1:7897` |
@@ -172,6 +173,7 @@ python main.py --burn
 ```
 VlogTrans/
 ├── main.py                          # 主入口，CLI 参数解析与流程编排
+├── app.py                           # Streamlit 可视化操作面板
 ├── config.py                        # 配置加载（.env → Settings）
 ├── .env.example                     # 配置模板
 ├── requirements.txt                 # Python 依赖
@@ -186,6 +188,7 @@ VlogTrans/
 │   │   └── merger.py                # FFmpeg 字幕烧录
 │   ├── audit/
 │   │   └── audit.py                 # 审计模块
+│   ├── ui_helpers.py                # Streamlit 面板辅助函数
 │   └── storage.py                   # 视频处理状态持久化
 ├── data/                            # 运行时数据（gitignore）
 │   ├── videos/                      # 下载的原始视频
@@ -228,7 +231,7 @@ sequenceDiagram
 |----------|------|----------|
 | `meta.json` | 视频标题 | 手动删除 |
 | `segments.json` | Whisper 转写结果 | `WHISPER_MODEL` 变更 |
-| `translated.json` | 翻译结果 | `DEESEEK_MODEL` 或 `batch_size` 变更 |
+| `translated.json` | 翻译结果 | `TRANSLATION_MODEL` 或 `batch_size` 变更 |
 | `review.txt` | 中英对照审查文件 | 手动编辑 |
 
 ---
@@ -238,7 +241,7 @@ sequenceDiagram
 | 限制 | 说明 |
 |------|------|
 | 翻译串位 | Whisper 按时间切片分段，长句可能被拆开导致翻译串位，需手动审查 |
-| Cookies 有效期 | YouTube cookies 几小时后过期，需从隐私窗口重新导出 |
+| Cookies 有效期 | Firefox cookies 自动读取，无需手动导出；若使用 cookies 文件，几小时后过期需重新导出 |
 | CPU 转写较慢 | medium.en 模型在 CPU 上约 20 分钟/15 分钟视频，建议使用 GPU |
 | 仅支持英文 | 当前仅支持英文转写 + 中译，其他语言需调整 Whisper 模型和翻译 prompt |
 
