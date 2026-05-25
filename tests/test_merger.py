@@ -35,9 +35,9 @@ class TestSubtitleMerger(unittest.TestCase):
             )
             self.assertEqual(content, expected)
 
-    @patch.object(SubtitleMerger, "_detect_hardware_accel", return_value=True)
+    @patch.object(SubtitleMerger, "_detect_best_codec", return_value="h264_nvenc")
     @patch("modules.merger.merger.subprocess.run")
-    def test_burn_subtitles_uses_nvenc(self, mock_run, mock_hwaccel):
+    def test_burn_subtitles_uses_nvenc(self, mock_run, mock_codec):
         with tempfile.TemporaryDirectory() as tmpdir:
             video_path = Path(tmpdir) / "video.mp4"
             srt_path = Path(tmpdir) / "subtitles.srt"
@@ -52,9 +52,9 @@ class TestSubtitleMerger(unittest.TestCase):
             self.assertIn(str(output_path), args)
             self.assertTrue(any("subtitles=" in arg for arg in args))
 
-    @patch.object(SubtitleMerger, "_detect_hardware_accel", return_value=False)
+    @patch.object(SubtitleMerger, "_detect_best_codec", return_value="libx264")
     @patch("modules.merger.merger.subprocess.run")
-    def test_burn_subtitles_falls_back_to_libx264(self, mock_run, mock_hwaccel):
+    def test_burn_subtitles_falls_back_to_libx264(self, mock_run, mock_codec):
         with tempfile.TemporaryDirectory() as tmpdir:
             video_path = Path(tmpdir) / "video.mp4"
             srt_path = Path(tmpdir) / "subtitles.srt"

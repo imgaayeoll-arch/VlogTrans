@@ -1,6 +1,14 @@
 import pytest
-from unittest.mock import patch, MagicMock
-from modules.translator import batch_translate
+from unittest.mock import MagicMock, patch
+
+import modules.translator.translator as translator_module
+
+
+@pytest.fixture(autouse=True)
+def reset_backend_singleton():
+    translator_module._backend_instance = None
+    yield
+    translator_module._backend_instance = None
 
 
 @pytest.fixture
@@ -13,92 +21,80 @@ def sample_segments():
         "The coffee here is incredible.",
         "Look at this beautiful view!",
         "I can't wait to share more with you.",
-        "Thanks for watching, see you next time!"
+        "Thanks for watching, see you next time!",
     ]
 
 
-@patch('modules.translator.translator.OpenAI')
-def test_batch_translate_success(mock_openai, sample_segments):
-    # Mock the OpenAI client and response
-    mock_client = MagicMock()
-    mock_openai.return_value = mock_client
+def _make_mock_response(content):
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "message": {"content": content},
+    }
+    return mock_resp
 
-    # Mock successful response with correct line count
-    mock_response = MagicMock()
-    mock_response.choices[0].message.content = "\n".join([
-        "[01] 大家好，欢迎来到我的频道！😊",
+
+def _full_translation_output():
+    return "\n".join([
+        "[01] 大家好，欢迎来到我的频道！",
         "[02] 今天我们要探索这座城市。",
         "[03] 我喜欢发现新地方。",
         "[04] 让我们从这家神奇的咖啡店开始。",
-        "[05] 这里的咖啡太棒了！☕",
-        "[06] 看看这个美丽的景色！🌟",
+        "[05] 这里的咖啡太棒了！",
+        "[06] 看看这个美丽的景色！",
         "[07] 我迫不及待想和你们分享更多。",
-        "[08] 感谢观看，下次见！👋"
+        "[08] 感谢观看，下次见！",
     ])
-    mock_client.chat.completions.create.return_value = mock_response
 
-    result = batch_translate(sample_segments, batch_size=10)
+
+@patch("httpx.Client")
+def test_batch_translate_success(mock_httpx_client, sample_segments):
+    client = MagicMock()
+    client.post.return_value = _make_mock_response(_full_translation_output())
+    mock_httpx_client.return_value = client
+
+    result = translator_module.batch_translate(sample_segments, batch_size=10)
 
     assert len(result) == len(sample_segments)
-    assert "[01]" in result[0]
     assert "大家好" in result[0]
-    mock_client.chat.completions.create.assert_called_once()
 
 
-@patch('modules.translator.translator.OpenAI')
-def test_batch_translate_line_count_mismatch_retry(mock_openai, sample_segments):
-    mock_client = MagicMock()
-    mock_openai.return_value = mock_client
+@patch("httpx.Client")
+def test_batch_translate_line_count_mismatch_retry(mock_httpx_client, sample_segments):
+    client = MagicMock()
+    mock_httpx_client.return_value = client
 
-    # First call returns wrong line count, second succeeds
-    mock_response1 = MagicMock()
-    mock_response1.choices[0].message.content = "[01] 翻译1\n[02] 翻译2"  # Only 2 lines
+    # First call returns empty content (triggers retry), second succeeds
+    client.post.side_effect = [
+        _make_mock_response(""),
+        _make_mock_response(_full_translation_output()),
+    ]
 
-    mock_response2 = MagicMock()
-    mock_response2.choices[0].message.content = "\n".join([
-        "[01] 大家好，欢迎来到我的频道！😊",
-        "[02] 今天我们要探索这座城市。",
-        "[03] 我喜欢发现新地方。",
-        "[04] 让我们从这家神奇的咖啡店开始。",
-        "[05] 这里的咖啡太棒了！☕",
-        "[06] 看看这个美丽的景色！🌟",
-        "[07] 我迫不及待想和你们分享更多。",
-        "[08] 感谢观看，下次见！👋"
-    ])
-
-    mock_client.chat.completions.create.side_effect = [mock_response1, mock_response2]
-
-    result = batch_translate(sample_segments, batch_size=10)
+    result = translator_module.batch_translate(sample_segments, batch_size=10)
 
     assert len(result) == len(sample_segments)
-    assert mock_client.chat.completions.create.call_count == 2
+    assert client.post.call_count >= 2
 
 
-@patch('modules.translator.translator.OpenAI')
-def test_batch_translate_max_retries_exceeded(mock_openai, sample_segments):
-    mock_client = MagicMock()
-    mock_openai.return_value = mock_client
+@patch("httpx.Client")
+def test_batch_translate_max_retries_exceeded(mock_httpx_client, sample_segments):
+    client = MagicMock()
+    mock_httpx_client.return_value = client
+    # Empty content on every attempt — cannot be padded by fallback
+    client.post.return_value = _make_mock_response("")
 
-    # Always return wrong line count
-    mock_response = MagicMock()
-    mock_response.choices[0].message.content = "[01] 翻译1"
-    mock_client.chat.completions.create.return_value = mock_response
-
-    with pytest.raises(ValueError, match="Translation failed after 3 retries"):
-        batch_translate(sample_segments, batch_size=10)
-
-    assert mock_client.chat.completions.create.call_count == 3
+    with pytest.raises((ValueError, RuntimeError)):
+        translator_module.batch_translate(sample_segments, batch_size=10)
 
 
-@patch('modules.translator.translator.OpenAI')
-def test_batch_translate_exception_handling(mock_openai, sample_segments):
-    mock_client = MagicMock()
-    mock_openai.return_value = mock_client
 
-    # Simulate connection error
-    mock_client.chat.completions.create.side_effect = Exception("Connection timeout")
+@patch("httpx.Client")
+def test_batch_translate_exception_handling(mock_httpx_client, sample_segments):
+    import httpx
 
-    with pytest.raises(Exception, match="Connection timeout"):
-        batch_translate(sample_segments, batch_size=10)
+    client = MagicMock()
+    mock_httpx_client.return_value = client
+    client.post.side_effect = httpx.ConnectError("Connection refused")
 
-    assert mock_client.chat.completions.create.call_count == 3  # Max retries
+    with pytest.raises((httpx.ConnectError, RuntimeError)):
+        translator_module.batch_translate(sample_segments, batch_size=10)

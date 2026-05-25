@@ -1,3 +1,6 @@
+# Streamlit credentials
+.streamlit/credentials.toml
+
 # Environment
 .env
 

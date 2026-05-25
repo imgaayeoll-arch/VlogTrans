@@ -1,10 +1,9 @@
 yt-dlp
 openai-whisper
-openai
 python-dotenv
 tqdm
-ffmpeg-python
-schedule
 pandas
 streamlit
 ollama
+httpx
+pytest

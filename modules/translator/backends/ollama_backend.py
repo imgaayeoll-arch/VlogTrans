@@ -18,7 +18,7 @@ class NonRetryableError(Exception):
 
 class OllamaBackend:
     def __init__(self):
-        self._model = settings.deepseek_model
+        self._model = settings.translation_model
         self._base_url = settings.ollama_host.rstrip("/")
         self._max_retries = settings.retry_attempts
         self._base_retry_delay = settings.retry_delay_seconds
@@ -98,7 +98,7 @@ class OllamaBackend:
         logger.warning("")
         logger.warning("解决方案：")
         logger.warning(f"  运行: ollama pull {self._model}")
-        logger.warning("  或在 .env 中修改 DEESEEK_MODEL 为已安装的模型名称")
+        logger.warning("  或在 .env 中修改 TRANSLATION_MODEL 为已安装的模型名称")
         return False
 
     def translate(self, segments, batch_size=10):

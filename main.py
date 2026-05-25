@@ -114,8 +114,8 @@ def _load_translated_cache(video_id, batch_size):
         return None
     try:
         data = json.loads(cache_file.read_text(encoding="utf-8"))
-        if data.get("model") != settings.deepseek_model:
-            logger.info(f"翻译模型已变更 ({data.get('model')} → {settings.deepseek_model})，重新翻译")
+        if data.get("model") != settings.translation_model:
+            logger.info(f"翻译模型已变更 ({data.get('model')} → {settings.translation_model})，重新翻译")
             return None
         if data.get("batch_size") != batch_size:
             logger.info(f"batch_size 已变更 ({data.get('batch_size')} → {batch_size})，重新翻译")
@@ -131,7 +131,7 @@ def _save_translated_cache(video_id, translations, batch_size):
     cache_file = _cache_dir(video_id) / "translated.json"
     cache_file.parent.mkdir(parents=True, exist_ok=True)
     data = {
-        "model": settings.deepseek_model,
+        "model": settings.translation_model,
         "batch_size": batch_size,
         "translations": translations,
     }

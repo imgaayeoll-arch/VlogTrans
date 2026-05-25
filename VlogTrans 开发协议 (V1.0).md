@@ -1,5 +1,7 @@
 # VlogTrans 开发协议 (V1.0)
 
+> 适用版本：VlogTrans V1.0 | 制定日期：2025-05
+
 ## 1. 核心原则
 - **模块自治**：modules 文件夹下的代码互不干扰。
 - **配置隔离**：所有 API、路径、模型参数统一从 config.py 读取。
@@ -11,10 +13,11 @@
 - **日志输出**：使用清晰的进度条（tqdm）和带颜色的日志（如：[SUCCESS] [ERROR]）。
 
 ## 3. 自动化流程规则
-1. Radar -> 检查并下载 (记录 ID)
-2. Translator -> Whisper 转写 -> Ollama 批量翻译 -> 生成双语 SRT
-3. Merger -> FFmpeg 硬件加速合成 (白色描边字幕)
-4. Audit -> 完成后清理临时文件
+1. Radar — 检查并下载视频（记录 ID）
+2. main.py — Whisper 转写（语音识别）→ VAD 时间戳修正 → 幻觉去重
+3. Translator — Ollama 批量翻译（英→中）
+4. Merger — 生成双语 SRT → FFmpeg 硬件加速合成字幕
+5. Audit — 完成后清理临时文件
 
 ## 4. 单元测试要求
 - 每次修改后，自动 audit 代码逻辑。
