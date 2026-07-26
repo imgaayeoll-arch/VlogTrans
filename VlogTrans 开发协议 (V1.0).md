@@ -1,6 +1,6 @@
 # VlogTrans 开发协议 (V1.0)
 
-> 适用版本：VlogTrans V1.0 | 制定日期：2025-05
+> 适用版本：VlogTrans V2.0 | 制定日期：2026-07 | [V1.0 变更记录见底部](#版本历史)
 
 ## 1. 核心原则
 - **模块自治**：modules 文件夹下的代码互不干扰。
@@ -13,12 +13,72 @@
 - **日志输出**：使用清晰的进度条（tqdm）和带颜色的日志（如：[SUCCESS] [ERROR]）。
 
 ## 3. 自动化流程规则
-1. Radar — 检查并下载视频（记录 ID）
-2. main.py — Whisper 转写（语音识别）→ VAD 时间戳修正 → 幻觉去重
-3. Translator — Ollama 批量翻译（英→中）
-4. Merger — 生成双语 SRT → FFmpeg 硬件加速合成字幕
+1. Radar — 检查并下载视频（记录 ID，支持多频道 + Cookie 回退链）
+2. main.py — Faster-Whisper 转写（CTranslate2 加速）→ Silero VAD 时间戳修正 → 幻觉去重
+3. Translator — DeepSeek API（主）→ Ollama（回退）双后端链，自动 failover
+4. Merger — 生成双语 SRT → FFmpeg 硬件加速合成字幕（NVENC / AMF / libx264）
 5. Audit — 完成后清理临时文件
 
 ## 4. 单元测试要求
-- 每次修改后，自动 audit 代码逻辑。
-- 必须包含 Mock 测试，模拟 API 掉线的情况。
+- 每次修改后，运行 `python -m pytest tests/ -v` 确保全部通过。
+- 必须包含 Mock 测试，模拟 API 掉线、限流、空返回等情况。
+- **多后端测试**：翻译后端链使用 `monkeypatch` 隔离配置（`TRANSLATION_BACKENDS_ORDER`），不可依赖真实的 `.env`。
+- 新增模块（radar / backends / merger）必须有对应测试文件。
+
+---
+
+## 5. 翻译后端链与 Fallback 机制
+- `TRANSLATION_BACKENDS_ORDER` 定义后端优先级（逗号分隔，如 `deepseek,ollama`）。
+- 链中第一个通过 `health_check()` 的后端成为主翻译线路。
+- 翻译失败时自动切换到下一个后端，所有后端均失败则抛出 `RuntimeError`。
+- 添加新后端只需：
+  1. 在 `modules/translator/backends/` 下新建 `xxx_backend.py`
+  2. 实现 `health_check()` 和 `translate(segments, batch_size)` 两个方法
+  3. 在 `backends/__init__.py` 和 `translator.py` 的 `_BACKENDS` 字典中注册
+- 当前可用后端：
+  | 后端 | 类型 | 模型 | fallback 策略 |
+  |------|------|------|---------------|
+  | DeepSeekBackend | 云端 API | `deepseek-chat` | 限流/服务异常自动降级到 Ollama |
+  | OllamaBackend | 本地 | `qwen2.5` | 最终兜底，本地不可用则整体失败 |
+
+---
+
+## 6. 缓存与审查机制
+- **缓存层级**：
+  | 文件 | 内容 | 失效条件 |
+  |------|------|----------|
+  | `meta.json` | 视频标题 | 手动删除 |
+  | `segments.json` | 转写结果 | `WHISPER_MODEL` 变更 |
+  | `translated.json` | 翻译结果 | 模型变更或 `batch_size` 变更 |
+  | `review.txt` | 中英对照（人工审查用） | 手动编辑 |
+- **审查流程**：`--prepare` 生成 `review.txt` → 用户编辑中文行（5 空格缩进）→ `--burn` 自动检测 `review.txt` 修改时间并回写缓存。
+- **回写安全性**：`review.txt` 行数与 `translated.json` 不一致时拒绝回写，记录 WARNING。
+
+---
+
+## 7. Streamlit 可视化面板规范
+- `app.py` 为独立入口，通过 `subprocess.Popen` 调用 `main.py`，不直接引用其内部函数。
+- 面板四大模块（Tab）：
+  | Tab | 功能 |
+  |-----|------|
+  | 概览 | 频道数、缓存/输出视频数、已处理 ID 统计 |
+  | 配置检查 | 依赖状态（FFmpeg / yt-dlp / deno / Ollama / cookies / 代理）|
+  | 任务运行 | 启动/停止 prepare / burn / 单视频处理，实时日志流 |
+  | 翻译审查 | 选择缓存视频 → 嵌入播放 → DataFrame 编辑中英文 → 保存回写 |
+- UI 辅助函数统一放在 `modules/ui_helpers.py`，不可在 `app.py` 中直接操作文件或环境变量。
+- 频道配置编辑通过 `update_env_channel_urls()` 写回 `.env` 文件。
+
+---
+
+## 8. 配置管理补充
+- HuggingFace 模型下载：通过 `HF_ENDPOINT` 设置镜像（国内用户建议 `https://hf-mirror.com`），代码中 `_setup_hf_env()` 负责注入环境变量并绕过代理。
+- Cookie 回退链：Firefox 浏览器 cookies → 手动 cookies 文件 → 无 cookies。
+- 代理：`HTTP_PROXY` / `HTTPS_PROXY` 同时作用于 yt-dlp 和 httpx，Ollama 本地请求通过 `OLLAMA_DISABLE_PROXY` 跳过代理。
+
+---
+
+## 版本历史
+| 版本 | 日期 | 变更 |
+|------|------|------|
+| V1.0 | 2025-05 | 初始版本：Whisper + Ollama 单后端架构 |
+| V2.0 | 2026-07 | 迁移 Faster-Whisper；新增 DeepSeek 后端与 fallback 链；新增 Streamlit UI；新增缓存审查机制；补充 Cookie/代理/镜像配置规范 |
