@@ -6,15 +6,28 @@ import shutil
 import subprocess
 from pathlib import Path
 
-import whisper
+from faster_whisper import WhisperModel
 import torch
 from config import settings
 from modules.merger import SubtitleMerger
 from modules.radar.radar import YoutubeRadar
 from modules.storage import VideoStorage
-from modules.translator.backends.ollama_backend import OllamaBackend
-from modules.translator.translator import batch_translate
+from modules.translator.translator import (
+    batch_translate,
+    check_translation_backends,
+    get_current_model_name,
+)
 from tqdm import tqdm
+
+
+def _setup_hf_env():
+    """Configure HuggingFace mirror and bypass proxy for model downloads."""
+    import os
+    os.environ["HF_ENDPOINT"] = settings.hf_endpoint
+    os.environ.pop("HTTP_PROXY", None)
+    os.environ.pop("HTTPS_PROXY", None)
+    os.environ.pop("http_proxy", None)
+    os.environ.pop("https_proxy", None)
 
 
 def setup_ffmpeg_path():
@@ -114,8 +127,9 @@ def _load_translated_cache(video_id, batch_size):
         return None
     try:
         data = json.loads(cache_file.read_text(encoding="utf-8"))
-        if data.get("model") != settings.translation_model:
-            logger.info(f"翻译模型已变更 ({data.get('model')} → {settings.translation_model})，重新翻译")
+        actual_model = get_current_model_name()
+        if data.get("model") != actual_model:
+            logger.info(f"翻译模型已变更 ({data.get('model')} → {actual_model})，重新翻译")
             return None
         if data.get("batch_size") != batch_size:
             logger.info(f"batch_size 已变更 ({data.get('batch_size')} → {batch_size})，重新翻译")
@@ -131,7 +145,7 @@ def _save_translated_cache(video_id, translations, batch_size):
     cache_file = _cache_dir(video_id) / "translated.json"
     cache_file.parent.mkdir(parents=True, exist_ok=True)
     data = {
-        "model": settings.translation_model,
+        "model": get_current_model_name(),
         "batch_size": batch_size,
         "translations": translations,
     }
@@ -274,22 +288,25 @@ def extract_audio(video_path, audio_path):
 
 
 def transcribe_with_whisper(model, audio_path):
-    logger.info("Transcribing audio with Whisper...")
-    result = model.transcribe(
+    logger.info("Transcribing audio with Faster-Whisper...")
+    segments_iter, info = model.transcribe(
         str(audio_path),
         language="en",
         task="transcribe",
-        verbose=False,
-        no_speech_threshold=0.8,
-        logprob_threshold=-0.5,
+        beam_size=5,
         condition_on_previous_text=False,
+        vad_filter=False,
+    )
+    logger.info(
+        f"Detected language: {info.language} (probability: {info.language_probability:.2f}), "
+        f"duration: {info.duration:.1f}s"
     )
     segments = []
-    for segment in result.get("segments", []):
+    for segment in segments_iter:
         segments.append({
-            "start": format_timestamp(segment["start"]),
-            "end": format_timestamp(segment["end"]),
-            "text": segment["text"].strip(),
+            "start": format_timestamp(segment.start),
+            "end": format_timestamp(segment.end),
+            "text": segment.text.strip(),
         })
     return segments
 
@@ -419,15 +436,17 @@ def prepare():
 
     setup_ffmpeg_path()
 
-    backend = OllamaBackend()
-    if not backend.health_check():
-        logger.error("Ollama 依赖检查失败，程序退出")
+    backend_status = check_translation_backends()
+    if not backend_status["available"]:
+        logger.error("无可用翻译后端，程序退出")
         return []
+    logger.info(f"翻译后端就绪: {' → '.join(backend_status['backends'])}")
 
     storage = VideoStorage()
     radar = YoutubeRadar()
     translator = batch_translate
-    whisper_model = whisper.load_model(settings.whisper_model)
+    _setup_hf_env()
+    whisper_model = WhisperModel(settings.whisper_model, device="cpu", compute_type="int8")
     batch_size = 5
 
     logger.info("Starting radar discovery for the latest 7 business days...")
@@ -585,15 +604,17 @@ def process_video(url):
 
     setup_ffmpeg_path()
 
-    backend = OllamaBackend()
-    if not backend.health_check():
-        logger.error("Ollama 依赖检查失败，程序退出")
+    backend_status = check_translation_backends()
+    if not backend_status["available"]:
+        logger.error("无可用翻译后端，程序退出")
         return
+    logger.info(f"翻译后端就绪: {' → '.join(backend_status['backends'])}")
 
     storage = VideoStorage()
     radar = YoutubeRadar()
     translator = batch_translate
-    whisper_model = whisper.load_model(settings.whisper_model)
+    _setup_hf_env()
+    whisper_model = WhisperModel(settings.whisper_model, device="cpu", compute_type="int8")
     batch_size = 5
 
     logger.info(f"Processing single video: {url}")

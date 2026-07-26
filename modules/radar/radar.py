@@ -16,6 +16,12 @@ class YoutubeRadar:
         self.download_path = settings.download_path
         self._subprocess_env = self._build_subprocess_env()
 
+    def _proxy_args(self):
+        proxy = os.environ.get("HTTP_PROXY") or os.environ.get("HTTPS_PROXY")
+        if proxy:
+            return ["--proxy", proxy]
+        return []
+
     @staticmethod
     def _build_subprocess_env():
         env = os.environ.copy()
@@ -52,10 +58,12 @@ class YoutubeRadar:
             ]
             if any(token.lower() in stderr.lower() for token in cookie_errors):
                 logger.warning(f"Cookie extraction failed: {stderr.strip()}")
-                continue
-            return result
+            else:
+                logger.warning(
+                    f"yt-dlp exited with {result.returncode}, trying next method: {stderr.strip()[:200]}"
+                )
 
-        logger.warning("Cookie extraction failed for all supported methods, retrying without cookies.")
+        logger.warning("All cookie methods failed, retrying without cookies.")
         return subprocess.run(base_cmd, capture_output=True, text=True, timeout=timeout, env=self._subprocess_env)
 
     # ================= 获取最新的 N 个视频（默认 3 个） =================
@@ -80,15 +88,10 @@ class YoutubeRadar:
             "--print", "%(id)s\t%(title)s",
             channel_url
         ]
-        full_cmd = []
-        for cookie_args in self._cookie_source_args():
-            full_cmd = cmd + cookie_args
-            break
-        else:
-            full_cmd = cmd
+        cmd += self._proxy_args()
 
-        logger.debug(f"Executing: {shlex.join(full_cmd)}")
-        result = subprocess.run(full_cmd, capture_output=True, text=True, timeout=120, env=self._subprocess_env)
+        logger.debug(f"Executing: {shlex.join(cmd)}")
+        result = self._run_yt_dlp_with_cookies(cmd, timeout=120)
         if result.returncode != 0:
             logger.warning(f"yt-dlp get_latest_videos failed: {result.stderr}")
             return []
@@ -155,8 +158,7 @@ class YoutubeRadar:
             "--merge-output-format", "mp4",
             "-o", output_template,
             "--no-playlist",
-            url,
-        ]
+        ] + self._proxy_args() + [url]
 
         try:
             result = self._run_yt_dlp_with_cookies(base_cmd, timeout=600)
@@ -186,8 +188,9 @@ class YoutubeRadar:
             "--print", "%(id)s\t%(title)s",
             "-o", output_template,
             "--no-playlist",
-            url,
-        ]
+        ] + self._proxy_args() + [url]
+
+        logger.info(f"Running command: {shlex.join(base_cmd)}")  
 
         try:
             result = self._run_yt_dlp_with_cookies(base_cmd, timeout=600)

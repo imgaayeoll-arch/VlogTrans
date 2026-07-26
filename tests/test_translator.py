@@ -6,9 +6,11 @@ import modules.translator.translator as translator_module
 
 @pytest.fixture(autouse=True)
 def reset_backend_singleton():
-    translator_module._backend_instance = None
+    translator_module._backend_chain = None
+    translator_module._current_model_name = None
     yield
-    translator_module._backend_instance = None
+    translator_module._backend_chain = None
+    translator_module._current_model_name = None
 
 
 @pytest.fixture
@@ -34,6 +36,15 @@ def _make_mock_response(content):
     return mock_resp
 
 
+def _make_ollama_health_response():
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "models": [{"name": "qwen2.5:latest"}],
+    }
+    return mock_resp
+
+
 def _full_translation_output():
     return "\n".join([
         "[01] 大家好，欢迎来到我的频道！",
@@ -48,8 +59,13 @@ def _full_translation_output():
 
 
 @patch("httpx.Client")
-def test_batch_translate_success(mock_httpx_client, sample_segments):
+def test_batch_translate_success(mock_httpx_client, sample_segments, monkeypatch):
+    monkeypatch.setattr(
+        "modules.translator.backends.deepseek_backend.DeepSeekBackend.health_check",
+        lambda self: False,
+    )
     client = MagicMock()
+    client.get.return_value = _make_ollama_health_response()
     client.post.return_value = _make_mock_response(_full_translation_output())
     mock_httpx_client.return_value = client
 
@@ -60,9 +76,14 @@ def test_batch_translate_success(mock_httpx_client, sample_segments):
 
 
 @patch("httpx.Client")
-def test_batch_translate_line_count_mismatch_retry(mock_httpx_client, sample_segments):
+def test_batch_translate_line_count_mismatch_retry(mock_httpx_client, sample_segments, monkeypatch):
+    monkeypatch.setattr(
+        "modules.translator.backends.deepseek_backend.DeepSeekBackend.health_check",
+        lambda self: False,
+    )
     client = MagicMock()
     mock_httpx_client.return_value = client
+    client.get.return_value = _make_ollama_health_response()
 
     # First call returns empty content (triggers retry), second succeeds
     client.post.side_effect = [
@@ -77,9 +98,14 @@ def test_batch_translate_line_count_mismatch_retry(mock_httpx_client, sample_seg
 
 
 @patch("httpx.Client")
-def test_batch_translate_max_retries_exceeded(mock_httpx_client, sample_segments):
+def test_batch_translate_max_retries_exceeded(mock_httpx_client, sample_segments, monkeypatch):
+    monkeypatch.setattr(
+        "modules.translator.backends.deepseek_backend.DeepSeekBackend.health_check",
+        lambda self: False,
+    )
     client = MagicMock()
     mock_httpx_client.return_value = client
+    client.get.return_value = _make_ollama_health_response()
     # Empty content on every attempt — cannot be padded by fallback
     client.post.return_value = _make_mock_response("")
 
@@ -89,11 +115,16 @@ def test_batch_translate_max_retries_exceeded(mock_httpx_client, sample_segments
 
 
 @patch("httpx.Client")
-def test_batch_translate_exception_handling(mock_httpx_client, sample_segments):
+def test_batch_translate_exception_handling(mock_httpx_client, sample_segments, monkeypatch):
     import httpx
 
+    monkeypatch.setattr(
+        "modules.translator.backends.deepseek_backend.DeepSeekBackend.health_check",
+        lambda self: False,
+    )
     client = MagicMock()
     mock_httpx_client.return_value = client
+    client.get.return_value = _make_ollama_health_response()
     client.post.side_effect = httpx.ConnectError("Connection refused")
 
     with pytest.raises((httpx.ConnectError, RuntimeError)):

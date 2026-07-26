@@ -25,6 +25,21 @@ class Settings:
     translation_backend = os.getenv("TRANSLATION_BACKEND", "ollama")
     cache_path = os.getenv("CACHE_PATH", "data/cache")
 
+    deepseek_api_key = os.getenv("DEEPSEEK_API_KEY", "")
+    deepseek_base_url = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+    deepseek_model = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+
+    _translation_backends_order_env = os.getenv("TRANSLATION_BACKENDS_ORDER", "")
+    if _translation_backends_order_env:
+        translation_backends_order = [
+            b.strip() for b in _translation_backends_order_env.split(",") if b.strip()
+        ]
+    else:
+        translation_backends_order = [translation_backend]
+
+    # HuggingFace mirror（国内加速模型下载）
+    hf_endpoint = os.getenv("HF_ENDPOINT", "https://hf-mirror.com")
+
     @property
     def ffmpeg_path(self):
         env_path = os.getenv("FFMPEG_PATH")
