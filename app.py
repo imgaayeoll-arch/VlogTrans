@@ -199,6 +199,50 @@ with tab3:
 
     is_running = st.session_state.running_task is not None
 
+    # ---- 解析 >>>PROGRESS: 行 ----
+    def _parse_progress(log_lines):
+        """从日志行中提取进度状态。"""
+        import json as _json
+        state = {"steps": {}, "errors": []}
+        for line in log_lines:
+            if not line.startswith(">>>PROGRESS:"):
+                continue
+            try:
+                evt = _json.loads(line[len(">>>PROGRESS:"):])
+            except _json.JSONDecodeError:
+                continue
+            t = evt.get("type")
+            if t == "phase":
+                state["phase"] = evt.get("name", "")
+                state["video_total"] = evt.get("video_total", 0)
+            elif t == "video":
+                state["video_id"] = evt.get("id", "")
+                state["video_title"] = evt.get("title", "")
+                state["video_current"] = evt.get("current", 0)
+                state["video_total"] = evt.get("total", state.get("video_total", 0))
+            elif t == "step":
+                name = evt.get("name", "")
+                state["steps"][name] = "running"
+            elif t == "step_done":
+                name = evt.get("name", "")
+                state["steps"][name] = "done"
+            elif t == "batch":
+                state["batch_current"] = evt.get("current", 0)
+                state["batch_total"] = evt.get("total", 0)
+            elif t == "error":
+                state["errors"].append(evt.get("message", ""))
+            elif t == "phase_done":
+                state["phase_done"] = True
+        return state
+
+    STEP_LABELS = {
+        "download": ("📥", "下载"),
+        "transcribe": ("🎙️", "转写"),
+        "translate": ("🌐", "翻译"),
+        "srt": ("📝", "生成字幕"),
+        "burn": ("🔥", "烧录"),
+    }
+
     def start_task(cmd_args, task_name):
         python_exe = sys.executable
         full_cmd = [python_exe, "main.py"] + cmd_args
@@ -228,17 +272,72 @@ with tab3:
         st.rerun()
 
     if is_running:
-        st.warning(f"任务运行中: {st.session_state.running_task}")
+        progress = _parse_progress(st.session_state.log_lines)
+
+        st.warning(f"⚡ 任务运行中: {st.session_state.running_task}")
         elapsed = time.time() - st.session_state.task_start_time if st.session_state.task_start_time else 0
-        st.metric("已运行时间", f"{elapsed:.0f} 秒")
+        mins, secs = int(elapsed // 60), int(elapsed % 60)
+        st.metric("已用时间", f"{mins} 分 {secs} 秒")
 
-        log_container = st.empty()
-        log_text = "\n".join(st.session_state.log_lines[-200:])
-        log_container.code(log_text, language="log")
+        # ---- 视频进度 ----
+        vcur = progress.get("video_current", 0)
+        vtot = progress.get("video_total", 0)
+        if vtot > 0:
+            pct = min(int(vcur / vtot * 100), 100)
+            vid = progress.get("video_id", "")
+            vtitle = progress.get("video_title", "")
+            st.progress(pct, f"视频 {vcur}/{vtot}")
+            if vid:
+                label = vtitle[:60] if vtitle else vid
+                st.caption(f"当前: {label}")
+        else:
+            st.progress(0, "准备中...")
 
+        # ---- 步骤状态 ----
+        steps = progress.get("steps", {})
+        ordered = ["download", "transcribe", "translate", "srt", "burn"]
+        active_steps = [s for s in ordered if s in steps]
+        if active_steps:
+            cols = st.columns(len(active_steps))
+            for ci, s in enumerate(active_steps):
+                status = steps[s]
+                icon, label = STEP_LABELS.get(s, ("⚙️", s))
+                if status == "done":
+                    cols[ci].success(f"{icon} {label} ✓")
+                elif status == "running":
+                    cols[ci].info(f"{icon} {label} ◌")
+                else:
+                    cols[ci].caption(f"{icon} {label}")
+        else:
+            st.caption("等待任务开始...")
+
+        # ---- 翻译批次进度 ----
+        bcur = progress.get("batch_current")
+        btot = progress.get("batch_total")
+        if bcur and btot and btot > 1:
+            st.progress(min(int(bcur / btot * 100), 100),
+                        f"翻译批次 {bcur}/{btot}")
+
+        # ---- 错误提示 ----
+        errors = progress.get("errors", [])
+        if errors:
+            for err in errors[-2:]:
+                st.warning(f"⚠️ {err}")
+
+        st.divider()
+
+        # ---- 日志（可折叠） ----
+        with st.expander("📋 查看详细日志"):
+            log_text = "\n".join(
+                line for line in st.session_state.log_lines[-300:]
+                if not line.startswith(">>>PROGRESS:")
+            )
+            st.code(log_text, language="log")
+
+        # ---- 停止按钮 ----
         col_stop, _ = st.columns([1, 3])
         with col_stop:
-            if st.button("停止任务", type="secondary"):
+            if st.button("⏹ 停止任务", type="secondary"):
                 if st.session_state.task_process is not None:
                     st.session_state.task_process.terminate()
                     st.session_state.running_task = None
@@ -246,6 +345,7 @@ with tab3:
                     st.session_state.log_lines.append("\n--- 任务已被用户停止 ---")
                     st.rerun()
 
+        # ---- 轮询任务完成 ----
         if st.session_state.task_process is not None:
             poll_result = st.session_state.task_process.poll()
             if poll_result is not None:
@@ -253,22 +353,28 @@ with tab3:
                 exit_code = st.session_state.task_process.returncode
                 st.session_state.task_process = None
                 total_time = time.time() - st.session_state.task_start_time if st.session_state.task_start_time else 0
+                mins, secs = int(total_time // 60), int(total_time % 60)
                 if exit_code == 0:
-                    st.success(f"任务完成！退出码: {exit_code}，耗时: {total_time:.1f} 秒")
+                    st.success(f"✅ 任务完成！耗时: {mins} 分 {secs} 秒")
+                    st.balloons()
                 else:
-                    st.error(f"任务失败！退出码: {exit_code}，耗时: {total_time:.1f} 秒")
+                    st.error(f"❌ 任务失败！退出码: {exit_code}，耗时: {mins} 分 {secs} 秒")
                 st.rerun()
             else:
                 time.sleep(1)
                 st.rerun()
     else:
         if st.session_state.log_lines:
-            exit_code = None
             total_time = time.time() - st.session_state.task_start_time if st.session_state.task_start_time else 0
-            st.success(f"上次任务完成，耗时: {total_time:.1f} 秒")
+            mins, secs = int(total_time // 60), int(total_time % 60)
+            st.success(f"上次任务完成，耗时: {mins} 分 {secs} 秒")
 
             with st.expander("查看上次日志"):
-                st.code("\n".join(st.session_state.log_lines), language="log")
+                log_text = "\n".join(
+                    line for line in st.session_state.log_lines
+                    if not line.startswith(">>>PROGRESS:")
+                )
+                st.code(log_text, language="log")
 
             if st.button("清除日志"):
                 st.session_state.log_lines = []

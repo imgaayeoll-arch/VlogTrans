@@ -252,6 +252,12 @@ def sanitize_filename(value, fallback):
     return cleaned[:180] or fallback
 
 
+def _emit_progress(data: dict) -> None:
+    """输出进度事件到 stdout，以 >>>PROGRESS: 前缀标记供 Streamlit UI 解析。"""
+    line = ">>>PROGRESS:" + json.dumps(data, ensure_ascii=False)
+    print(line, flush=True)
+
+
 def format_timestamp(seconds):
     milliseconds = int(seconds * 1000)
     hours, remainder = divmod(milliseconds, 3600 * 1000)
@@ -464,26 +470,36 @@ def prepare():
         print("🎉没有需要准备的视频。")
         return []
 
+    video_total = len(videos_to_process)
+    _emit_progress({"type": "phase", "name": "prepare", "video_total": video_total})
+
     prepared_ids = []
-    for video in tqdm(videos_to_process, desc="Preparing videos", unit="video", colour="green"):
+    for idx, video in enumerate(tqdm(videos_to_process, desc="Preparing videos", unit="video", colour="green"), 1):
         video_id = video["id"]
         title = video.get("title") or video_id
         logger.info(f"Preparing video {video_id} - {title}")
+        _emit_progress({"type": "video", "id": video_id, "title": title, "current": idx, "total": video_total})
 
         try:
             _save_meta_cache(video_id, title)
 
             logger.info("Step A: Downloading video...")
+            _emit_progress({"type": "step", "name": "download"})
             downloaded_video_path = radar.download_video(video_id)
             if not downloaded_video_path:
                 logger.warning(f"Download skipped for {video_id}.")
+                _emit_progress({"type": "error", "step": "download", "message": "Download failed"})
                 continue
+            _emit_progress({"type": "step_done", "name": "download"})
 
             segments = _load_segments_cache(video_id)
             if segments is not None:
                 logger.info("Step B: 跳过转录，使用缓存结果")
+                _emit_progress({"type": "step", "name": "transcribe"})
+                _emit_progress({"type": "step_done", "name": "transcribe"})
             else:
                 logger.info("Step B: Extracting English subtitle segments with Whisper...")
+                _emit_progress({"type": "step", "name": "transcribe"})
                 audio_path = Path(settings.download_path) / f"{video_id}.wav"
                 extract_audio(downloaded_video_path, audio_path)
                 segments = transcribe_with_whisper(whisper_model, audio_path)
@@ -499,15 +515,22 @@ def prepare():
 
                 _save_segments_cache(video_id, segments)
                 cleanup_files([audio_path])
+                _emit_progress({"type": "step_done", "name": "transcribe"})
 
             translated_texts = _load_translated_cache(video_id, batch_size)
             if translated_texts is not None:
                 logger.info("Step C: 跳过翻译，使用缓存结果")
+                _emit_progress({"type": "step", "name": "translate"})
+                _emit_progress({"type": "step_done", "name": "translate"})
             else:
                 logger.info("Step C: Translating segments in batches...")
+                _emit_progress({"type": "step", "name": "translate"})
                 english_texts = [segment["text"] for segment in segments]
-                translated_texts = translator(english_texts, batch_size=batch_size)
+                translated_texts = translator(english_texts, batch_size=batch_size,
+                                              progress_callback=lambda cur, tot: _emit_progress(
+                                                  {"type": "batch", "current": cur, "total": tot}))
                 _save_translated_cache(video_id, translated_texts, batch_size)
+                _emit_progress({"type": "step_done", "name": "translate"})
 
             review_file = _save_review_file(video_id, segments, translated_texts)
             prepared_ids.append(video_id)
@@ -519,8 +542,10 @@ def prepare():
 
         except Exception as exc:
             logger.error(f"Failed preparing video {video_id}: {exc}", exc_info=True)
+            _emit_progress({"type": "error", "step": "", "message": str(exc)[:100]})
             continue
 
+    _emit_progress({"type": "phase_done", "name": "prepare"})
     print("🎉准备阶段完成！请审查翻译结果后运行 python main.py --burn")
     return prepared_ids
 
@@ -549,18 +574,30 @@ def burn():
         logger.error("没有找到准备好的视频缓存，请先运行 python main.py --prepare")
         return
 
+    burn_videos = []
     for video_id in video_ids:
         if storage.is_processed(video_id):
             logger.info(f"Skipping already processed video {video_id}")
             continue
+        burn_videos.append(video_id)
 
+    if not burn_videos:
+        logger.info("所有缓存视频均已处理完毕，无需烧录。")
+        return
+
+    video_total = len(burn_videos)
+    _emit_progress({"type": "phase", "name": "burn", "video_total": video_total})
+
+    for idx, video_id in enumerate(burn_videos, 1):
         _sync_review_to_cache(video_id)
 
         title = _load_meta_cache(video_id) or video_id
+        _emit_progress({"type": "video", "id": video_id, "title": title, "current": idx, "total": video_total})
         segments = _load_segments_cache_raw(video_id)
         translated_texts = _load_translated_cache_raw(video_id)
         if segments is None or translated_texts is None:
             logger.error(f"视频 {video_id} 缓存不完整，请重新运行 --prepare")
+            _emit_progress({"type": "error", "step": "", "message": "缓存不完整"})
             continue
 
         logger.info(f"Burning subtitles for video {video_id} - {title}")
@@ -573,12 +610,18 @@ def burn():
 
         if not downloaded_video_path:
             logger.error(f"视频 {video_id} 的下载文件未找到，请重新运行 --prepare")
+            _emit_progress({"type": "error", "step": "", "message": "视频文件未找到"})
             continue
 
         try:
+            _emit_progress({"type": "step", "name": "srt"})
             subtitle_path, output_video_path = build_output_paths(title, video_id)
             merger.generate_bilingual_srt(segments, translated_texts, subtitle_path)
+            _emit_progress({"type": "step_done", "name": "srt"})
+
+            _emit_progress({"type": "step", "name": "burn"})
             merger.burn_subtitles(downloaded_video_path, subtitle_path, output_video_path)
+            _emit_progress({"type": "step_done", "name": "burn"})
 
             logger.info("Marking video as processed and cleaning up cache...")
             storage.add_video(video_id)
@@ -588,8 +631,10 @@ def burn():
 
         except Exception as exc:
             logger.error(f"Failed burning subtitles for {video_id}: {exc}", exc_info=True)
+            _emit_progress({"type": "error", "step": "", "message": str(exc)[:100]})
             continue
 
+    _emit_progress({"type": "phase_done", "name": "burn"})
     print("🎉烧录阶段完成！请在输出文件夹查收。")
 
 
@@ -618,15 +663,20 @@ def process_video(url):
     batch_size = 5
 
     logger.info(f"Processing single video: {url}")
+    _emit_progress({"type": "phase", "name": "single_video", "video_total": 1})
 
+    _emit_progress({"type": "step", "name": "download"})
     result = radar.download_video_by_url(url)
     if not result:
         logger.error(f"Failed to download video from {url}")
+        _emit_progress({"type": "error", "step": "download", "message": "Download failed"})
         return
+    _emit_progress({"type": "step_done", "name": "download"})
 
     video_id = result["id"]
     title = result["title"]
     downloaded_video_path = result["path"]
+    _emit_progress({"type": "video", "id": video_id, "title": title, "current": 1, "total": 1})
 
     if storage.is_processed(video_id):
         logger.info(f"Video {video_id} already processed, skipping.")
@@ -640,8 +690,11 @@ def process_video(url):
         segments = _load_segments_cache(video_id)
         if segments is not None:
             logger.info("Step B: 跳过转录，使用缓存结果")
+            _emit_progress({"type": "step", "name": "transcribe"})
+            _emit_progress({"type": "step_done", "name": "transcribe"})
         else:
             logger.info("Step B: Extracting English subtitle segments with Whisper...")
+            _emit_progress({"type": "step", "name": "transcribe"})
             audio_path = Path(settings.download_path) / f"{video_id}.wav"
             extract_audio(downloaded_video_path, audio_path)
             segments = transcribe_with_whisper(whisper_model, audio_path)
@@ -657,15 +710,22 @@ def process_video(url):
 
             _save_segments_cache(video_id, segments)
             cleanup_files([audio_path])
+            _emit_progress({"type": "step_done", "name": "transcribe"})
 
         translated_texts = _load_translated_cache(video_id, batch_size)
         if translated_texts is not None:
             logger.info("Step C: 跳过翻译，使用缓存结果")
+            _emit_progress({"type": "step", "name": "translate"})
+            _emit_progress({"type": "step_done", "name": "translate"})
         else:
             logger.info("Step C: Translating segments in batches...")
+            _emit_progress({"type": "step", "name": "translate"})
             english_texts = [segment["text"] for segment in segments]
-            translated_texts = translator(english_texts, batch_size=batch_size)
+            translated_texts = translator(english_texts, batch_size=batch_size,
+                                          progress_callback=lambda cur, tot: _emit_progress(
+                                              {"type": "batch", "current": cur, "total": tot}))
             _save_translated_cache(video_id, translated_texts, batch_size)
+            _emit_progress({"type": "step_done", "name": "translate"})
 
         review_file = _save_review_file(video_id, segments, translated_texts)
 
@@ -676,6 +736,7 @@ def process_video(url):
 
     except Exception as exc:
         logger.error(f"Failed preparing video {video_id}: {exc}", exc_info=True)
+        _emit_progress({"type": "error", "step": "", "message": str(exc)[:100]})
 
 
 def main():

@@ -76,13 +76,14 @@ def get_current_model_name():
     return _current_model_name or get_primary_model_name()
 
 
-def batch_translate(segments, batch_size=10):
+def batch_translate(segments, batch_size=10, progress_callback=None):
     global _current_model_name
     chain = _get_backend_chain()
 
     for i, backend in enumerate(chain):
         try:
-            result = backend.translate(segments, batch_size=batch_size)
+            result = backend.translate(segments, batch_size=batch_size,
+                                       progress_callback=progress_callback)
             _current_model_name = backend._model
             if i > 0:
                 logger.info(f"已切换到 fallback: {backend.__class__.__name__}")

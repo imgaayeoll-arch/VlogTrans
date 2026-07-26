@@ -32,17 +32,19 @@ class DeepSeekBackend:
         logger.info(f"✓ DeepSeek backend 已配置（model={self._model}）")
         return True
 
-    def translate(self, segments, batch_size=10):
+    def translate(self, segments, batch_size=10, progress_callback=None):
         if not segments:
             return []
 
         if not self._api_key:
             raise NonRetryableError("DeepSeek API Key 未配置")
 
+        total_batches = (len(segments) + batch_size - 1) // batch_size
         translated_segments = []
 
         for i in range(0, len(segments), batch_size):
             batch = segments[i:i + batch_size]
+            batch_index = i // batch_size + 1
             batch_text = "\n".join(
                 f"[{j + 1:02d}] {text}" for j, text in enumerate(batch)
             )
@@ -70,6 +72,8 @@ class DeepSeekBackend:
                 f"输入：\n{batch_text}\n\n输出："
             )
 
+            if progress_callback and total_batches > 1:
+                progress_callback(batch_index, total_batches)
             result = self._translate_batch_with_retry(prompt, len(batch))
             translated_segments.extend(result)
 

@@ -101,14 +101,16 @@ class OllamaBackend:
         logger.warning("  或在 .env 中修改 TRANSLATION_MODEL 为已安装的模型名称")
         return False
 
-    def translate(self, segments, batch_size=10):
+    def translate(self, segments, batch_size=10, progress_callback=None):
         if not segments:
             return []
 
+        total_batches = (len(segments) + batch_size - 1) // batch_size
         translated_segments = []
 
         for i in range(0, len(segments), batch_size):
             batch = segments[i:i + batch_size]
+            batch_index = i // batch_size + 1
             batch_text = "\n".join(
                 f"[{j + 1:02d}] {text}" for j, text in enumerate(batch)
             )
@@ -136,6 +138,8 @@ class OllamaBackend:
                 f"输入：\n{batch_text}\n\n输出："
             )
 
+            if progress_callback and total_batches > 1:
+                progress_callback(batch_index, total_batches)
             result = self._translate_batch_with_retry(prompt, len(batch))
             translated_segments.extend(result)
 
