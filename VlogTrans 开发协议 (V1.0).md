@@ -77,8 +77,67 @@
 
 ---
 
+## 9. Git 提交规范
+- **Conventional Commits**：所有 commit message 遵循 `type(scope): description` 格式。
+  | type | 用途 | 示例 |
+  |------|------|------|
+  | `feat` | 新功能 | `feat: add DeepSeek translation backend` |
+  | `fix` | Bug 修复 | `fix: radar cookie fallback loop` |
+  | `docs` | 文档变更 | `docs: update README for faster-whisper` |
+  | `refactor` | 重构（不改变功能） | `refactor: extract cookie logic to method` |
+  | `test` | 测试相关 | `test: add fallback chain mock tests` |
+  | `chore` | 杂项（依赖/构建/工具） | `chore: update yt-dlp to latest` |
+- **提交粒度**：一次 commit 只做一件事，禁止将无关变更混入同一提交。
+- **禁止提交**：`.env`、`__pycache__/`、`data/`、`*.cookies.txt`、含真实 API Key 的任何文件。推送前执行 `git diff --staged` 确认。
+- **分支策略**：`main` 为稳定分支；功能开发在 feature 分支完成，通过 PR 合并。
+
+---
+
+## 10. 安全规范
+- **密钥管理**：
+  - API Key（DeepSeek 等）**仅**存在于 `.env`，绝不可写入 `.env.example`、源码或注释。
+  - `.env.example` 中敏感字段值为占位符（如 `your-deepseek-api-key-here`）。
+  - `.gitignore` 必须包含 `.env`，确保不会被意外提交。
+- **泄露应急**：一旦发现 Key 被推送到 GitHub：
+  1. 立即在服务商后台（DeepSeek / GitHub Settings）轮换该 Key
+  2. 使用 `git filter-branch` 或 `bfg` 清理历史
+  3. 检查是否有未授权调用记录
+- **依赖审计**：定期检查 `requirements.txt` 中依赖的安全公告，避免已知漏洞。
+- **输入校验**：外部输入（YouTube URL、频道名）必须校验格式，防止命令注入。
+
+---
+
+## 11. 代码风格与类型注解
+- **类型注解**：所有公开函数必须使用 Python 3.10+ type hints。
+
+  ```python
+  # ✅ 正确
+  def transcribe_with_whisper(model: WhisperModel, audio_path: Path) -> list[dict]:
+      """用 Faster-Whisper 将音频转写为字幕段列表。
+
+      Args:
+          model: 已加载的 Faster-Whisper 模型实例。
+          audio_path: 16kHz 单声道 WAV 文件路径。
+
+      Returns:
+          字幕段列表，每段含 start / end / text 字段。
+      """
+      ...
+
+  # ❌ 错误：无类型注解，无 docstring
+  def transcribe_with_whisper(model, audio_path):
+      ...
+  ```
+- **Docstring**：所有公开函数必须有 docstring，至少包含一行功能描述；参数超过 2 个或有复杂返回值时，需写明参数和返回值说明。
+- **导入顺序**：标准库 → 第三方库 → 项目内部模块，每组之间空一行。
+- **行宽**：推荐 ≤ 100 字符，最大 120 字符。
+- **字符串编码**：读写文件统一指定 `encoding="utf-8"`，不得依赖系统默认编码。
+
+---
+
 ## 版本历史
 | 版本 | 日期 | 变更 |
 |------|------|------|
 | V1.0 | 2025-05 | 初始版本：Whisper + Ollama 单后端架构 |
 | V2.0 | 2026-07 | 迁移 Faster-Whisper；新增 DeepSeek 后端与 fallback 链；新增 Streamlit UI；新增缓存审查机制；补充 Cookie/代理/镜像配置规范 |
+| V2.1 | 2026-07 | 新增：Git 提交规范（Conventional Commits）、安全规范（密钥管理 / 泄露应急 / 依赖审计）、代码风格与类型注解规范 |
