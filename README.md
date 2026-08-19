@@ -22,6 +22,8 @@
 - 🤖 **多后端翻译** — DeepSeek API（主）→ Ollama Qwen2.5（回退），自动 fallback，数据安全有保障
 - 🎯 **VAD 时间修正** — Silero VAD 修正 Whisper 时间戳偏移，解决 BGM 段字幕提前问题
 - 🧹 **幻觉去重** — 自动检测并删除 Whisper 重复幻觉段
+- 🗑️ **空段过滤** — 自动删除无文本的空字幕段
+- 📊 **终端进度条** — 下载 / 转写 / 翻译 / 烧录四阶段 tqdm 进度条（交互式终端自动显示）
 - 📝 **翻译审查** — 中英对照 review.txt，编辑后自动回写缓存
 - 📡 **多频道支持** — 同时监控多个 YouTube 频道，自动去重
 - 🔗 **单视频处理** — `--video` 参数直接处理任意视频 URL
@@ -36,7 +38,7 @@ flowchart LR
     A[YouTube 频道] -->|yt-dlp| B[视频下载<br/>1080p MP4]
     B -->|Faster-Whisper| C[语音转写<br/>英文 SRT]
     C -->|Silero VAD| D[时间戳修正]
-    D -->|前缀去重| E[幻觉段清除]
+    D -->|前缀去重| E[幻觉/空段清除]
     E -->|DeepSeek / Ollama| F[批量翻译<br/>英→中]
     F --> G[review.txt<br/>中英对照]
     G -->|用户审查/编辑| H[回写缓存]
@@ -152,7 +154,7 @@ python main.py --burn
 
 | 参数 | 说明 |
 |------|------|
-| `--prepare` | 准备阶段：下载视频 → Faster-Whisper 转写 → VAD 修正 → 幻觉去重 → 翻译 → 生成 review.txt |
+| `--prepare` | 准备阶段：下载视频 → Faster-Whisper 转写 → VAD 修正 → 幻觉/空段过滤 → 翻译 → 生成 review.txt |
 | `--burn` | 烧录阶段：回写 review.txt 修改 → 生成 SRT → FFmpeg 烧录字幕 |
 | `--all` | 一键运行：prepare + burn，跳过审查 |
 | `--video URL` | 处理单个视频 URL |
@@ -185,6 +187,7 @@ VlogTrans/
 ├── .env.example                     # 配置模板
 ├── requirements.txt                 # Python 依赖
 ├── modules/
+│   ├── progress.py                  # 终端进度条工具（tqdm）
 │   ├── radar/
 │   │   └── radar.py                 # YouTube 频道监控与视频下载
 │   ├── translator/
@@ -239,7 +242,7 @@ sequenceDiagram
 |----------|------|----------|
 | `meta.json` | 视频标题 | 手动删除 |
 | `segments.json` | Faster-Whisper 转写结果 | `WHISPER_MODEL` 变更 |
-| `translated.json` | 翻译结果 | `TRANSLATION_MODEL` 或 `batch_size` 变更 |
+| `translated.json` | 翻译结果 | `TRANSLATION_MODEL` / `batch_size` 变更，或与 segments 条数不一致 |
 | `review.txt` | 中英对照审查文件 | 手动编辑 |
 
 ---

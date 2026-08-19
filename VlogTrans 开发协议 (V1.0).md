@@ -10,11 +10,11 @@
 ## 2. 编码契约
 - **命名规范**：函数名必须清晰描述意图（如：fetch_youtube_metadata）。
 - **异常处理**：禁止使用空的 `except:`，必须捕获特定错误并记录日志。
-- **日志输出**：使用清晰的进度条（tqdm）和带颜色的日志（如：[SUCCESS] [ERROR]）。
+- **日志输出**：使用清晰的进度条（tqdm）和带颜色的日志（如：[SUCCESS] [ERROR]）。终端进度条统一走 `modules/progress.py` 的 `terminal_progress()`，仅在交互式终端（stderr 为 TTY）显示，避免污染 Streamlit 子进程的 stdout 协议。
 
 ## 3. 自动化流程规则
 1. Radar — 检查并下载视频（记录 ID，支持多频道 + Cookie 回退链）
-2. main.py — Faster-Whisper 转写（CTranslate2 加速）→ Silero VAD 时间戳修正 → 幻觉去重
+2. main.py — Faster-Whisper 转写（CTranslate2 加速）→ Silero VAD 时间戳修正 → 幻觉/空段过滤
 3. Translator — DeepSeek API（主）→ Ollama（回退）双后端链，自动 failover
 4. Merger — 生成双语 SRT → FFmpeg 硬件加速合成字幕（NVENC / AMF / libx264）
 5. Audit — 完成后清理临时文件
@@ -49,9 +49,9 @@
   |------|------|----------|
   | `meta.json` | 视频标题 | 手动删除 |
   | `segments.json` | 转写结果 | `WHISPER_MODEL` 变更 |
-  | `translated.json` | 翻译结果 | 模型变更或 `batch_size` 变更 |
+  | `translated.json` | 翻译结果 | 模型 / `batch_size` 变更，或与 segments 条数不一致 |
   | `review.txt` | 中英对照（人工审查用） | 手动编辑 |
-- **审查流程**：`--prepare` 生成 `review.txt` → 用户编辑中文行（5 空格缩进）→ `--burn` 自动检测 `review.txt` 修改时间并回写缓存。
+- **审查流程**：`--prepare` 生成 `review.txt` → 用户编辑中文行（任意缩进均可识别）→ `--burn` 自动检测 `review.txt` 修改时间并回写缓存。
 - **回写安全性**：`review.txt` 行数与 `translated.json` 不一致时拒绝回写，记录 WARNING。
 
 ---
@@ -141,3 +141,4 @@
 | V1.0 | 2025-05 | 初始版本：Whisper + Ollama 单后端架构 |
 | V2.0 | 2026-07 | 迁移 Faster-Whisper；新增 DeepSeek 后端与 fallback 链；新增 Streamlit UI；新增缓存审查机制；补充 Cookie/代理/镜像配置规范 |
 | V2.1 | 2026-07 | 新增：Git 提交规范（Conventional Commits）、安全规范（密钥管理 / 泄露应急 / 依赖审计）、代码风格与类型注解规范 |
+| V2.2 | 2026-08 | 新增终端进度条（下载 / 转写 / 翻译 / 烧录）；翻译缓存与 segments 条数一致性校验；空段过滤；review.txt 解析兼容 tab 缩进 |
