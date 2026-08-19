@@ -1,7 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from modules.merger import SubtitleMerger
 
@@ -36,8 +36,16 @@ class TestSubtitleMerger(unittest.TestCase):
             self.assertEqual(content, expected)
 
     @patch.object(SubtitleMerger, "_detect_best_codec", return_value="h264_nvenc")
-    @patch("modules.merger.merger.subprocess.run")
-    def test_burn_subtitles_uses_nvenc(self, mock_run, mock_codec):
+    @patch.object(SubtitleMerger, "_probe_duration", return_value=60.0)
+    @patch("modules.merger.merger.subprocess.Popen")
+    def test_burn_subtitles_uses_nvenc(self, mock_popen, mock_duration, mock_codec):
+        proc = MagicMock()
+        proc.returncode = 0
+        proc.stdout = []
+        proc.stderr = []
+        proc.wait.return_value = 0
+        mock_popen.return_value = proc
+
         with tempfile.TemporaryDirectory() as tmpdir:
             video_path = Path(tmpdir) / "video.mp4"
             srt_path = Path(tmpdir) / "subtitles.srt"
@@ -46,15 +54,23 @@ class TestSubtitleMerger(unittest.TestCase):
             merger = SubtitleMerger()
             merger.burn_subtitles(str(video_path), str(srt_path), str(output_path))
 
-            mock_run.assert_called_once()
-            args = mock_run.call_args[0][0]
+            mock_popen.assert_called_once()
+            args = mock_popen.call_args[0][0]
             self.assertIn("h264_nvenc", args)
             self.assertIn(str(output_path), args)
             self.assertTrue(any("subtitles=" in arg for arg in args))
 
     @patch.object(SubtitleMerger, "_detect_best_codec", return_value="libx264")
-    @patch("modules.merger.merger.subprocess.run")
-    def test_burn_subtitles_falls_back_to_libx264(self, mock_run, mock_codec):
+    @patch.object(SubtitleMerger, "_probe_duration", return_value=60.0)
+    @patch("modules.merger.merger.subprocess.Popen")
+    def test_burn_subtitles_falls_back_to_libx264(self, mock_popen, mock_duration, mock_codec):
+        proc = MagicMock()
+        proc.returncode = 0
+        proc.stdout = []
+        proc.stderr = []
+        proc.wait.return_value = 0
+        mock_popen.return_value = proc
+
         with tempfile.TemporaryDirectory() as tmpdir:
             video_path = Path(tmpdir) / "video.mp4"
             srt_path = Path(tmpdir) / "subtitles.srt"
@@ -63,8 +79,8 @@ class TestSubtitleMerger(unittest.TestCase):
             merger = SubtitleMerger()
             merger.burn_subtitles(str(video_path), str(srt_path), str(output_path))
 
-            mock_run.assert_called_once()
-            args = mock_run.call_args[0][0]
+            mock_popen.assert_called_once()
+            args = mock_popen.call_args[0][0]
             self.assertIn("libx264", args)
             self.assertIn(str(output_path), args)
             self.assertTrue(any("subtitles=" in arg for arg in args))

@@ -2,14 +2,17 @@ import argparse
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 from faster_whisper import WhisperModel
 import torch
 from config import settings
 from modules.merger import SubtitleMerger
+from modules.progress import terminal_progress
 from modules.radar.radar import YoutubeRadar
 from modules.storage import VideoStorage
 from modules.translator.translator import (
@@ -210,8 +213,11 @@ def _parse_review_file(video_id):
         return None
     translations = []
     for line in review_file.read_text(encoding="utf-8").splitlines():
-        if line.startswith("     "):
-            translations.append(line[5:])
+        stripped = line.strip()
+        # 跳过空行与英文行（[NNN] 开头），其余任意缩进（空格/tab）视为译文
+        if not stripped or re.match(r"^\[\d+\]", stripped):
+            continue
+        translations.append(stripped)
     return translations if translations else None
 
 
@@ -253,7 +259,13 @@ def sanitize_filename(value, fallback):
 
 
 def _emit_progress(data: dict) -> None:
-    """输出进度事件到 stdout，以 >>>PROGRESS: 前缀标记供 Streamlit UI 解析。"""
+    """输出进度事件到 stdout，以 >>>PROGRESS: 前缀标记供 Streamlit UI 解析。
+
+    仅在 stdout 为管道（被 Streamlit 子进程消费）时输出；终端直跑时跳过，
+    避免与 tqdm 进度条混在一起造成噪音。
+    """
+    if sys.stdout.isatty():
+        return
     line = ">>>PROGRESS:" + json.dumps(data, ensure_ascii=False)
     print(line, flush=True)
 
@@ -308,12 +320,18 @@ def transcribe_with_whisper(model, audio_path):
         f"duration: {info.duration:.1f}s"
     )
     segments = []
-    for segment in segments_iter:
-        segments.append({
-            "start": format_timestamp(segment.start),
-            "end": format_timestamp(segment.end),
-            "text": segment.text.strip(),
-        })
+    with terminal_progress(total=info.duration, desc="转录", unit="s") as bar:
+        last = 0.0
+        for segment in segments_iter:
+            segments.append({
+                "start": format_timestamp(segment.start),
+                "end": format_timestamp(segment.end),
+                "text": segment.text.strip(),
+            })
+            bar.update(segment.end - last)
+            last = segment.end
+        if info.duration:
+            bar.update(info.duration - last)
     return segments
 
 
@@ -408,6 +426,14 @@ def _remove_hallucination_segments(segments):
 
     result = [s for idx, s in enumerate(segments) if idx not in remove_indices]
     logger.info(f"Removed {len(remove_indices)} hallucination segment(s)")
+    return result
+
+
+def _remove_empty_segments(segments):
+    result = [s for s in segments if s.get("text", "").strip()]
+    removed = len(segments) - len(result)
+    if removed:
+        logger.info(f"Removed {removed} empty segment(s)")
     return result
 
 
@@ -513,11 +539,19 @@ def prepare():
                 logger.info("Step B3: Removing hallucination segments...")
                 segments = _remove_hallucination_segments(segments)
 
+                logger.info("Step B4: Removing empty segments...")
+                segments = _remove_empty_segments(segments)
+
                 _save_segments_cache(video_id, segments)
                 cleanup_files([audio_path])
                 _emit_progress({"type": "step_done", "name": "transcribe"})
 
             translated_texts = _load_translated_cache(video_id, batch_size)
+            if translated_texts is not None and len(translated_texts) != len(segments):
+                logger.warning(
+                    f"翻译缓存行数 ({len(translated_texts)}) 与转录段数 ({len(segments)}) 不一致，重新翻译"
+                )
+                translated_texts = None
             if translated_texts is not None:
                 logger.info("Step C: 跳过翻译，使用缓存结果")
                 _emit_progress({"type": "step", "name": "translate"})
@@ -526,9 +560,15 @@ def prepare():
                 logger.info("Step C: Translating segments in batches...")
                 _emit_progress({"type": "step", "name": "translate"})
                 english_texts = [segment["text"] for segment in segments]
-                translated_texts = translator(english_texts, batch_size=batch_size,
-                                              progress_callback=lambda cur, tot: _emit_progress(
-                                                  {"type": "batch", "current": cur, "total": tot}))
+                total_batches = (len(english_texts) + batch_size - 1) // batch_size
+                with terminal_progress(total=total_batches, desc="翻译", unit="批") as bar:
+                    def cb(cur, tot):
+                        _emit_progress({"type": "batch", "current": cur, "total": tot})
+                        bar.n = cur
+                        bar.refresh()
+
+                    translated_texts = translator(english_texts, batch_size=batch_size,
+                                                  progress_callback=cb)
                 _save_translated_cache(video_id, translated_texts, batch_size)
                 _emit_progress({"type": "step_done", "name": "translate"})
 
@@ -708,11 +748,19 @@ def process_video(url):
             logger.info("Step B3: Removing hallucination segments...")
             segments = _remove_hallucination_segments(segments)
 
+            logger.info("Step B4: Removing empty segments...")
+            segments = _remove_empty_segments(segments)
+
             _save_segments_cache(video_id, segments)
             cleanup_files([audio_path])
             _emit_progress({"type": "step_done", "name": "transcribe"})
 
         translated_texts = _load_translated_cache(video_id, batch_size)
+        if translated_texts is not None and len(translated_texts) != len(segments):
+            logger.warning(
+                f"翻译缓存行数 ({len(translated_texts)}) 与转录段数 ({len(segments)}) 不一致，重新翻译"
+            )
+            translated_texts = None
         if translated_texts is not None:
             logger.info("Step C: 跳过翻译，使用缓存结果")
             _emit_progress({"type": "step", "name": "translate"})
@@ -721,9 +769,15 @@ def process_video(url):
             logger.info("Step C: Translating segments in batches...")
             _emit_progress({"type": "step", "name": "translate"})
             english_texts = [segment["text"] for segment in segments]
-            translated_texts = translator(english_texts, batch_size=batch_size,
-                                          progress_callback=lambda cur, tot: _emit_progress(
-                                              {"type": "batch", "current": cur, "total": tot}))
+            total_batches = (len(english_texts) + batch_size - 1) // batch_size
+            with terminal_progress(total=total_batches, desc="翻译", unit="批") as bar:
+                def cb(cur, tot):
+                    _emit_progress({"type": "batch", "current": cur, "total": tot})
+                    bar.n = cur
+                    bar.refresh()
+
+                translated_texts = translator(english_texts, batch_size=batch_size,
+                                              progress_callback=cb)
             _save_translated_cache(video_id, translated_texts, batch_size)
             _emit_progress({"type": "step_done", "name": "translate"})
 

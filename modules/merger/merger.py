@@ -1,9 +1,13 @@
 import logging
 import os
+import re
+import shutil
 import subprocess
+import threading
 from pathlib import Path
 
 from config import settings
+from modules.progress import terminal_progress
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +91,28 @@ class SubtitleMerger:
             return ["-rc", "cqp", "-qp_i", "18", "-qp_p", "20"]
         return ["-crf", "18", "-preset", "medium"]
 
+    def _ffprobe_path(self):
+        suffix = ".exe" if os.name == "nt" else ""
+        sibling = Path(self.ffmpeg_cmd).with_name(f"ffprobe{suffix}")
+        if sibling.exists():
+            return str(sibling)
+        return shutil.which("ffprobe") or "ffprobe"
+
+    def _probe_duration(self, video_path):
+        try:
+            result = subprocess.run(
+                [self._ffprobe_path(), "-v", "error", "-show_entries",
+                 "format=duration", "-of", "csv=p=0", str(video_path)],
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode == 0:
+                value = (result.stdout or "").strip()
+                if value:
+                    return float(value)
+        except (subprocess.SubprocessError, ValueError):
+            pass
+        return None
+
     def burn_subtitles(self, video_path, srt_path, output_video_path):
         output_video = Path(output_video_path)
         output_video.parent.mkdir(parents=True, exist_ok=True)
@@ -102,6 +128,8 @@ class SubtitleMerger:
         cmd = [
             self.ffmpeg_cmd,
             "-y",
+            "-progress", "pipe:1",
+            "-nostats",
             "-i",
             str(video_path),
             "-vf",
@@ -114,5 +142,34 @@ class SubtitleMerger:
             str(output_video),
         ]
 
-        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        duration = self._probe_duration(video_path)
+
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        stderr_buf = []
+        bar = terminal_progress(total=duration, desc="烧录", unit="s", dynamic_ncols=True)
+
+        def _read_stdout():
+            for line in proc.stdout:
+                m = re.search(r"out_time_ms=(\d+)", line)
+                if m:
+                    bar.n = int(m.group(1)) / 1_000_000
+                    bar.refresh()
+
+        stdout_reader = threading.Thread(target=_read_stdout, daemon=True)
+        stderr_reader = threading.Thread(
+            target=lambda: stderr_buf.extend(proc.stderr), daemon=True
+        )
+        stdout_reader.start()
+        stderr_reader.start()
+
+        proc.wait()
+        stdout_reader.join(timeout=5)
+        stderr_reader.join(timeout=5)
+        bar.close()
+
+        if proc.returncode != 0:
+            raise subprocess.CalledProcessError(
+                proc.returncode, cmd, output=None, stderr="".join(stderr_buf)
+            )
+
         return str(output_video)

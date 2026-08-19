@@ -63,10 +63,14 @@ def test_download_video_downloads_and_persists(monkeypatch, tmp_path):
     storage.add_video = MagicMock()
     monkeypatch.setattr(radar_module, "VideoStorage", lambda: storage)
 
-    # Simulate successful download on first cookie attempt
-    mock_run = MagicMock()
-    mock_run.return_value = _make_subprocess_result(returncode=0)
-    monkeypatch.setattr(radar_module, "subprocess", MagicMock(run=mock_run))
+    # Simulate successful download on first cookie attempt (Popen path)
+    proc = MagicMock()
+    proc.returncode = 0
+    proc.stderr = []
+    proc.stdout.read.return_value = ""
+    proc.wait.return_value = 0
+    mock_popen = MagicMock(return_value=proc)
+    monkeypatch.setattr(radar_module.subprocess, "Popen", mock_popen)
 
     # Create the "downloaded" file (name must contain video_id)
     (download_dir / f"{video_id}.mp4").write_text("")
@@ -75,7 +79,7 @@ def test_download_video_downloads_and_persists(monkeypatch, tmp_path):
     output_path = radar.download_video(video_id)
 
     assert output_path == str(download_dir / f"{video_id}.mp4")
-    mock_run.assert_called()
+    mock_popen.assert_called()
     # Note: download_video() does NOT call storage.add_video() —
     # that is done by the caller (main.py prepare flow)
 

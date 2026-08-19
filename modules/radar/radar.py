@@ -1,9 +1,12 @@
 import logging
 import os
+import re
 import shlex
 import subprocess
+import threading
 
 from config import settings
+from modules.progress import terminal_progress
 from modules.storage import VideoStorage
 
 logger = logging.getLogger(__name__)
@@ -39,11 +42,11 @@ class YoutubeRadar:
             args.append(["--cookies", settings.youtube_cookies_path])
         return args
 
-    def _run_yt_dlp_with_cookies(self, base_cmd, timeout):
+    def _run_yt_dlp_with_cookies(self, base_cmd, timeout, progress=False, desc="下载"):
         for cookie_args in self._cookie_source_args():
             cmd = base_cmd + cookie_args
             logger.debug(f"Trying yt-dlp with cookies: {shlex.join(cmd)}")
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=self._subprocess_env)
+            result = self._run_yt_dlp_once(cmd, timeout, progress, desc)
             if result.returncode == 0:
                 return result
 
@@ -64,7 +67,40 @@ class YoutubeRadar:
                 )
 
         logger.warning("All cookie methods failed, retrying without cookies.")
-        return subprocess.run(base_cmd, capture_output=True, text=True, timeout=timeout, env=self._subprocess_env)
+        return self._run_yt_dlp_once(base_cmd, timeout, progress, desc)
+
+    def _run_yt_dlp_once(self, cmd, timeout, progress, desc):
+        if not progress:
+            return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=self._subprocess_env)
+        return self._run_streaming(cmd, timeout, desc)
+
+    def _run_streaming(self, cmd, timeout, desc):
+        """带进度条地运行 yt-dlp：边读 stderr 边驱动 tqdm，同时累进缓冲区供 cookie 检测。"""
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, env=self._subprocess_env)
+        stderr_buf = []
+        bar = terminal_progress(total=100.0, desc=desc, unit="%")
+
+        def _read():
+            for line in proc.stderr:
+                stderr_buf.append(line)
+                m = re.search(r"\[download\]\s+([\d.]+)%", line)
+                if m:
+                    bar.n = float(m.group(1))
+                    bar.refresh()
+
+        reader = threading.Thread(target=_read, daemon=True)
+        reader.start()
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            raise
+        finally:
+            reader.join(timeout=5)
+            bar.close()
+
+        return subprocess.CompletedProcess(cmd, proc.returncode, proc.stdout.read(), "".join(stderr_buf))
 
     # ================= 获取最新的 N 个视频（默认 3 个） =================
     def _get_latest_videos(self, channel_url, max_count=3):
@@ -161,7 +197,7 @@ class YoutubeRadar:
         ] + self._proxy_args() + [url]
 
         try:
-            result = self._run_yt_dlp_with_cookies(base_cmd, timeout=600)
+            result = self._run_yt_dlp_with_cookies(base_cmd, timeout=600, progress=True)
             if result.returncode != 0:
                 logger.error(f"yt-dlp download failed for {video_id}: {result.stderr}")
                 return None
@@ -193,7 +229,7 @@ class YoutubeRadar:
         logger.info(f"Running command: {shlex.join(base_cmd)}")  
 
         try:
-            result = self._run_yt_dlp_with_cookies(base_cmd, timeout=600)
+            result = self._run_yt_dlp_with_cookies(base_cmd, timeout=600, progress=True)
             if result.returncode != 0:
                 logger.error(f"yt-dlp download failed for {url}: {result.stderr}")
                 return None
